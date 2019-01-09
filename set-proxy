@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+HELP_TEXT="This program modifies nginx settings to route requests from a specific port to any host.
+Parameters:
+-op - an original port which nginx should listen to. Required
+-p - a port to route to. Optional. Default value: the original port
+-h - a host to route to. Optional. Default value: http://localhost
+
+Example:
+setproxy -op 3000 -p 3000 -h 10.8.6.22
+
+If neither port nor host are defined then this program removes nginx settings previously specified for a original port.";
+
+# check where is ane parameters
+if [ -z "$1" ]
+then
+	echo "$HELP_TEXT"
+	exit 0
+fi
+
+# get parameters values
+while [ -n "$1" ]
+do
+	case "$1" in
+		-op) ORIGINAL_PORT="$2"
+			shift ;;
+		-p) PORT="$2"
+			shift ;;
+		-h) HOST="$2"
+			shift ;;
+	esac
+	shift
+done
+
+# check parameters are correct
+if [ -z "$ORIGINAL_PORT" ]
+then
+	echo "Error: the original port is not specified." >&2
+	echo "
+$HELP_TEXT"
+	exit 1
+fi
+
+IS_NUMBER='^[0-9]+$'
+
+if ! [[ $ORIGINAL_PORT =~ $IS_NUMBER ]] ; then
+	echo "Error: the original port is not a number." >&2
+	echo "
+$HELP_TEXT"
+	exit 1
+fi
+
+if [ -n "$PORT" ] && ! [[ $PORT =~ $IS_NUMBER ]]
+then
+	echo "Error: the port is not a number." >&2
+	echo "
+$HELP_TEXT"
+	exit 1
+fi
+
+# TODO paste correct folder
+CONFIG_PATH="/etc/nginx/conf.d/"
+CONFIG_FILE_EXTENTION=".conf"
+
+if ! [ -d $CONFIG_PATH ]
+then
+	echo "The '$CONFIG_PATH' directory doesn't exist. Are you sure nginx is installed?" >&2
+	exit 1
+fi
+
+CONFIG_FILE_EXTENTION="${CONFIG_PATH}${ORIGINAL_PORT}${CONFIG_FILE_EXTENTION}"
+
+# delete settings if port is not specified
+if [ -z "$PORT" ] && [ -z "$HOST" ]
+then
+	echo "Neither port nor host are specified. Try to delete existing settings."
+
+	if [ -e "$CONFIG_FILE_EXTENTION" ]
+	then
+		rm "$CONFIG_FILE_EXTENTION"
+		echo "Proxy settings for the port '${ORIGINAL_PORT}' has been deleted successfully."
+	else
+		echo "Proxy settings for the port '${ORIGINAL_PORT}' has not been created previously."
+	fi
+
+	exit 0
+fi
+
+if [ -z "$HOST" ]
+then
+	HOST="http://localhost"
+fi
+
+if [ -z "$PORT" ]
+then
+	PORT=$ORIGINAL_PORT
+fi
+
+CONFIG_TEXT="server {
+	proxy_redirect          off;
+	proxy_set_header        Host            \$host;
+	proxy_set_header        X-Real-IP       \$remote_addr;
+	proxy_set_header        X-Forwarded-For \$proxy_add_x_forwarded_for;
+	client_max_body_size    10m;
+	client_body_buffer_size 128k;
+	proxy_connect_timeout   90;
+	proxy_send_timeout      90;
+	proxy_read_timeout      90;
+	proxy_buffers           32 4k;
+
+	listen       ${ORIGINAL_PORT} default_server;
+	listen       [::]:${ORIGINAL_PORT} default_server;
+	server_name  _;
+
+	include /etc/nginx/default.d/*.conf;
+
+	location / {
+		proxy_pass      ${HOST}:${PORT};
+	}
+}"
+
+# create config file
+
+if sudo sh -c "echo '$CONFIG_TEXT' > '$CONFIG_FILE_EXTENTION'"
+then
+	echo "Proxy settings for the port '${ORIGINAL_PORT}' has been created successfully."
+else
+	echo "Proxy settings for the port '${ORIGINAL_PORT}' has NOT been created."
+	exit 1
+fi
+
+if systemctl is-active --quiet nginx
+then
+	echo "nginx is active. Try to restart."
+	if sudo systemctl restart nginx
+	then
+		echo "nginx has been restarted successfully."
+	fi
+else
+	echo "nginx is not active."
+	echo "You can run it via 'sudo systemctl start nginx'."
+fi
